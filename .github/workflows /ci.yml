@@ -1,4 +1,4 @@
-name: Rust CI: Lint, Check, Build, Test
+name: Lint, Check, Build, Test
 
 on:
   push:

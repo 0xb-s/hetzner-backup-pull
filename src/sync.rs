@@ -2,18 +2,16 @@
 //! plus optional rsync push.
 
 use crate::error::HbpError;
-use cfg_if::cfg_if;
 use indicatif::ProgressBar;
 use reqwest::blocking::Response;
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{Read, Write},
-    path::Path,
-    process::Command,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
-/// Options that affect streaming pipeline.
 #[derive(Clone)]
 pub struct SyncOptions {
     pub compress: bool,
@@ -26,78 +24,98 @@ pub fn stream_to_disk(
     pb: &ProgressBar,
     opts: &SyncOptions,
 ) -> Result<String, HbpError> {
-    let file = File::create(dest)?;
-    let mut writer: Box<dyn Write> = Box::new(file);
+    let final_path: PathBuf = dest.to_owned();
+    let mut hasher = Sha256::new();
+
+    let mut sink: Box<dyn Write> = if let Some(pass) = &opts.encrypt_pass {
+        let mut child = Command::new("openssl")
+            .args([
+                "enc",
+                "-aes-256-cbc",
+                "-salt",
+                "-pbkdf2",
+                "-iter",
+                "100000",
+                "-pass",
+                "stdin",
+                "-out",
+                final_path.to_str().ok_or_else(|| HbpError::Cli("non-UTF8 path".into()))?,
+            ])
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| HbpError::Cli(format!("spawn openssl: {e}")))?;
+
+        {
+            use std::io::Write;
+            child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| HbpError::Other("missing openssl stdin".into()))?
+                .write_all(pass.as_bytes())?;
+        }
+
+        Box::new(
+            child
+                .stdin
+                .take()
+                .ok_or_else(|| HbpError::Other("missing openssl streaming stdin".into()))?,
+        )
+    } else {
+        Box::new(File::create(&final_path)?)
+    };
 
     if opts.compress {
-        writer = Box::new(xz2::write::XzEncoder::new(writer, 6));
+        sink = Box::new(xz2::write::XzEncoder::new(sink, 6));
     }
 
-    cfg_if! {
-        if #[cfg(unix)] {
-            if let Some(pass) = &opts.encrypt_pass {
-                let mut child = Command::new("openssl")
-                    .args([
-                        "enc", "-aes-256-cbc", "-salt",
-                        "-pass", "stdin",
-                        "-pbkdf2",
-                        "-iter", "100000"
-                    ])
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .spawn()
-                    .map_err(|e| HbpError::Cli(format!("Failed to spawn openssl: {e}")))?;
-
-
-                if let Some(mut stdin) = child.stdin.take() {
-                    stdin.write_all(pass.as_bytes())?;
-                }
-
-                writer = Box::new(child.stdout.take().unwrap());
-            }
-        } else {
-            if opts.encrypt_pass.is_some() {
-                return Err(HbpError::Cli(
-                    "--encrypt requires Unix (openssl CLI)".into(),
-                ));
-            }
-        }
-    }
-
-    let mut hasher = Sha256::new();
     let mut buf = [0u8; 32 * 1024];
     loop {
-        let len = resp.read(&mut buf)?;
-        if len == 0 {
+        let n = resp.read(&mut buf)?;
+        if n == 0 {
             break;
         }
-        writer.write_all(&buf[..len])?;
-        hasher.update(&buf[..len]);
-        pb.inc(len as u64);
+        sink.write_all(&buf[..n])?;
+        hasher.update(&buf[..n]);
+        pb.inc(n as u64);
     }
-    writer.flush()?;
+    sink.flush()?;
 
-    let digest = hex::encode(hasher.finalize());
-    std::fs::write(dest.with_extension("sha256"), digest.as_bytes())?;
-    Ok(digest)
+    if let Some(_) = &opts.encrypt_pass {
+        drop(sink);
+
+        let status = Command::new("pgrep")
+            .args(["-f", &final_path.to_string_lossy()])
+            .status()
+            .unwrap_or_default();
+        if !status.success() {
+            return Err(HbpError::Other("openssl enc failed".into()));
+        }
+    }
+
+    let digest_hex = hex::encode(hasher.finalize());
+    let mut digest_file = final_path.clone();
+    digest_file.set_extension("sha256");
+    std::fs::write(digest_file, &digest_hex)?;
+
+    Ok(digest_hex)
 }
 
 pub fn rsync_to(target: &str, file: &Path) -> Result<(), HbpError> {
     let status = Command::new("rsync")
         .args([
             "--archive",
+            "--compress",
             "--partial",
             "--progress",
-            file.to_str()
-                .ok_or_else(|| HbpError::Cli("Non-UTF8 path".into()))?,
+            file.to_str().ok_or_else(|| HbpError::Cli("non-UTF8 path".into()))?,
             target,
         ])
         .status()?;
 
     if status.success() {
-        eprintln!(" rsync complete.");
+        eprintln!(" rsync complete");
         Ok(())
     } else {
-        Err(HbpError::Other(format!("rsync exited with code {status}",)))
+        Err(HbpError::Other(format!("rsync exited with code {status}")))
     }
 }

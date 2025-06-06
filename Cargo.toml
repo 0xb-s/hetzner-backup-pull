@@ -1,0 +1,29 @@
+[package]
+name = "hetzner-backup-pull"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# CLI and config
+clap = { version = "4.5.4", features = ["derive", "env"] }
+dotenvy = "0.15.7"
+
+# API / HTTP
+reqwest = { version = "0.11.26", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1.0.203", features = ["derive"] }
+serde_json = "1.0.117"
+
+# Progress bar
+indicatif = "0.17.8"
+
+# Compression & checksums
+xz2 = "0.1.7"
+sha2 = "0.10.8"
+hex = "0.4.3"
+
+# Async-free runtime utilities
+thiserror = "1.0.58"
+
+# Used only on Unix for rsync + openssl spawning
+cfg-if = "1.0.0"
+chrono = "0.4.41"

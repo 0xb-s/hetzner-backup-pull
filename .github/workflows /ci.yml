@@ -1,0 +1,59 @@
+name: Rust CI: Lint, Check, Build, Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-checks:
+    name: "Rust Checks - ${{ matrix.task }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [build, check, fmt, clippy, test]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Add rustfmt
+        if: matrix.task == 'fmt'
+        run: rustup component add rustfmt
+
+      - name: Add clippy
+        if: matrix.task == 'clippy'
+        run: rustup component add clippy
+
+      - name: Run cargo ${{ matrix.task }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: ${{ matrix.task }}
+          args: >-
+            ${{
+              matrix.task == 'fmt' && '--all -- --check' ||
+              matrix.task == 'clippy' && '-- -D warnings' ||
+              ''
+            }}

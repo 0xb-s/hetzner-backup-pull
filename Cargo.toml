@@ -21,11 +21,9 @@ xz2 = "0.1.7"
 sha2 = "0.10.8"
 hex = "0.4.3"
 
-
+# Error handling
 thiserror = "1.0.58"
 
-# Used only on Unix for rsync + openssl spawning
-cfg-if = "1.0.0"
 
 # Time
 chrono = "0.4.41"
